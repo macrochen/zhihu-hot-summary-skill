@@ -16,7 +16,9 @@ description: 获取知乎热榜 → 编号展示 → 用户选号 → 并行抓�
 
 ### 第零步：确保已登录知乎（仅首次需要）
 
-知乎热榜和详情都需要通过 opencli 的后台浏览器抓取。**登录一次后 cookie 持久保存，后续无需重复登录。**
+知乎详情需要通过 opencli 的后台浏览器抓取（需登录态）。热榜列表有公开 API，不强制要求登录，但如果 opencli 命令返回 403，可直接回退到公开 API。**登录一次后 cookie 持久保存，后续无需重复登录。**
+
+**重要**：`background-browser` 使用独立 Chrome Profile，与用户日常 Chrome 的登录状态**不共享**。即使用户已在常规 Chrome 中登录知乎，无头浏览器侧仍然是未登录状态，必须通过 `background-browser login` 在专属窗口中单独登录一次。
 
 **首次使用（需要打开浏览器登录一次）：**
 
@@ -46,11 +48,38 @@ description: 获取知乎热榜 → 编号展示 → 用户选号 → 并行抓�
 
 ### 第一步：获取热榜并编号展示
 
-运行：
+**优先尝试** opencli 后台静默浏览器：
 
 ```bash
 ~/.agents/skills/opencli-skill/scripts/run-opencli.sh zhihu hot --limit 50 -f json
 ```
+
+**回退方案**：如果上述命令返回 HTTP 403 或其他错误，直接调用知乎公开 API（无需登录）：
+
+```bash
+curl -s "https://api.zhihu.com/topstory/hot-list?limit=50" \
+  -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+  -o /tmp/zhihu_hot.json
+```
+
+然后用 Python 解析 JSON：
+
+```python
+import json
+with open('/tmp/zhihu_hot.json', 'r') as f:
+    data = json.load(f)
+items = data.get('data', [])
+for i, item in enumerate(items, 1):
+    target = item.get('target', {})
+    title = target.get('title', '无标题')
+    qid = target.get('id', '')
+    excerpt = target.get('excerpt', '')[:80]
+    hot_text = item.get('detail_text', '')
+    url = f'https://www.zhihu.com/question/{qid}' if qid else ''
+    # 编号+标题+热度+摘要
+```
+
+**注意**：公开 API 只能获取热榜列表，详情页抓取仍需走 opencli 的 `zhihu detail`（需登录态）。
 
 走 opencli 后台静默浏览器，不接管前台 Chrome。
 
@@ -140,9 +169,30 @@ description: 获取知乎热榜 → 编号展示 → 用户选号 → 并行抓�
 ~/outputs/zhihu-hot-summary-skill/YYYY-MM-DD-知乎热榜总结.md
 ```
 
+## 故障排查
+
+### `zhihu hot` 返回 HTTP 403
+
+这是最常见的问题，通常意味着 background-browser 的 cookie 已过期或从未登录。
+
+**排查顺序**：
+1. 先确认是否曾通过 `background-browser login` 登录过（不是普通 Chrome）
+2. 如果不确定，直接回退到公开 API 拉热榜列表（无需登录）：
+   ```bash
+   curl -s "https://api.zhihu.com/topstory/hot-list?limit=50" \
+     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+     -o /tmp/zhihu_hot.json
+   ```
+3. 公开 API **只能获取列表**，详情页仍需走 `zhihu detail`（需登录态）
+4. 如果详情也 403，执行 `stop` → `login` → 用户手动登录 → `start` 的完整流程
+
+### 登录状态不共享
+
+用户在常规 Chrome 登录知乎 ≠ 无头浏览器已登录。`background-browser` 使用独立 Chrome Profile（路径见 login 命令输出），必须专门登录。
+
 ## 注意事项
 
-- 首次使用需打开浏览器登录一次，后续全自动走无头浏览器
+- 首次使用需通过 `background-browser login` 专门登录一次，后续全自动走无头浏览器
 - 抓取阶段串行执行（共用一个 headless Chrome 实例），避免触发反爬
 - 总结阶段可并行处理（每篇总结是纯 LLM 工作，无需浏览器）
 - 如果 `zhihu detail` 抓到的是软文、广告或正文缺失，明确说明"无法正常总结"并给出原因
