@@ -186,6 +186,18 @@ for i, item in enumerate(items, 1):
 3. 公开 API **只能获取列表**，详情页仍需走 `zhihu detail`（需登录态）
 4. 如果详情也 403，执行 `stop` → `login` → 用户手动登录 → `start` 的完整流程
 
+### `zhihu detail` 返回成功但 answers 为空
+
+**隐蔽失败模式**：`zhihu detail` 命令返回 exit_code=0 和有效 JSON，但 `answers` 字段为空列表 `[]`。这不是 HTTP 错误，而是知乎对未登录用户返回的问题页面只包含元数据（title、follower_count 等），不包含回答正文。
+
+**排查方法**：
+1. 检查返回 JSON 中 `answers` 字段是否为 `[]`
+2. 如果为空，说明无头浏览器的 cookie 已过期或从未登录
+3. 公开 API 的 answers 端点 (`/questions/{id}/answers`) 同样需要登录，会返回 error code 40362
+4. 必须执行 `stop` → `login` → 用户手动登录 → `start` 的完整流程
+
+**实测结论**：知乎问题详情和回答内容均强制要求登录态，公开 API 无法绕过。
+
 ### 登录状态不共享
 
 用户在常规 Chrome 登录知乎 ≠ 无头浏览器已登录。`background-browser` 使用独立 Chrome Profile（路径见 login 命令输出），必须专门登录。
@@ -198,3 +210,12 @@ for i, item in enumerate(items, 1):
 - 如果 `zhihu detail` 抓到的是软文、广告或正文缺失，明确说明"无法正常总结"并给出原因
 - 非中文内容先翻译为简体中文再总结
 - 繁体中文统一转为简体中文
+
+### 子 Agent 幻觉防范
+
+使用 `delegate_task` 做并行总结时，子 agent 可能编造与原文完全不符的内容（实测：子 agent 曾将第 4 篇火锅店关门总结成了"迪士尼大裁员"）。防范措施：
+
+1. **主 agent 必须抽查**：收到所有子 agent 总结后，至少抽查 2-3 篇，核对文章标题是否与原始 JSON 中的 `title` 字段一致
+2. **给子 agent 强制约束**：在 context 中明确要求子 agent 先输出 `---TITLE CHECK: [实际标题]---` 再开始正文，主 agent 可快速比对
+3. **大规模抓取优先存文件**：超过 5 篇时，用 `execute_code` 串行 fetch 并保存到 `/tmp/zhihu_articles/article_N.json`，子 agent 通过文件路径读取。这比把内容嵌入 context 更可靠，也方便主 agent 回溯校验
+4. **delegate_task 并发上限为 3**：如果超过 3 批，分两轮执行（先 3 批，再补剩余）
